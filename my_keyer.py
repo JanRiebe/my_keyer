@@ -144,7 +144,7 @@ def create_matte():
 
 
 # reading in foreground
-fg_path = "C:\\Users\\Jan\\Pictures\\Greenscreen_Sasha.jpg"  #input("Please enter the path of the image: ")
+fg_path = input("Please enter the path of the foreground image: ")
 fg = cv2.imread(fg_path).astype(np.float32)/255.0
 while fg is None:
     print("Could not load image from this path.")
@@ -152,13 +152,12 @@ while fg is None:
     fg = cv2.imread(fg_path)
 
 # reading in background
-bg_path = "C:\\Users\\Jan\\Pictures\\Bussard1495.jpg"  #input("Please enter the path of the image: ")
+bg_path = input("Please enter the path of the background image: ")
 bg = cv2.imread(bg_path).astype(np.float32)/255.0
-
-#while bg is None:
-#    print("Could not load image from this path.")
-#    fg_path = input("Please enter a valid path of the image: ")
-#    fg = cv2.imread(bg_path)
+while bg is None:
+    print("Could not load image from this path.")
+    bg_path = input("Please enter a valid path of the image: ")
+    bg = cv2.imread(bg_path)
 
 
 
