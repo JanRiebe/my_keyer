@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
-
+import sys
+from PySide2 import QtCore, QtWidgets
 
 # picture variables
 canvas = (1080, 1920)
@@ -23,12 +24,19 @@ despill = True
 cv2.namedWindow('viewer', cv2.WINDOW_NORMAL)
 
 
-def update_viewer(alpha):
-    """ draws the original image, the matte and the comp into a side by side viewer
-    """
+def cut2canvas(img, img_pos, canvas_size):
+    # TODO rework to allow negative positions
+    img_canvas = np.zeros([canvas_size[0], canvas_size[1], 3], 'float')
+    height_cut = min(img_pos[0] + img.shape[0], canvas_size[0])
+    width_cut = min(img_pos[1] + img.shape[1], canvas_size[1])
+    img_cut = img[0: canvas_size[0] - img_pos[0], 0: canvas_size[1] - img_pos[1]]
+    img_canvas[fg_pos[0]:height_cut, fg_pos[1]:width_cut] = img_cut
+    return img_canvas
 
-    #spill reduction
-    fg_despilled = fg.copy()
+
+def merge_images(foreground, matte, background):
+    # spill reduction
+    fg_despilled = foreground.copy()
     if despill:
         # if green bigger than average red and blue
         # lower green to average
@@ -36,47 +44,26 @@ def update_viewer(alpha):
         b = fg_despilled[:, :, 0]
         g = fg_despilled[:, :, 1]
         r = fg_despilled[:, :, 2]
-        average = (b+r)/2
-        g = np.maximum(g, average)
-        g_diff = g - average
-        #br_relation = b/r   #TODO not right, use this below
-        b += g_diff/2
-        r += g_diff/2
+        average = (b + r) / 2           # the average between r and b
+        g = np.minimum(g, average)      # lowering green values to the average of blue and red
+        g_diff = g - average            # the amount green is being lowered
+        b += g_diff / 2
+        r += g_diff / 2
         fg_despilled[:, :, 0] = b
         fg_despilled[:, :, 1] = g
         fg_despilled[:, :, 2] = r
-        print("spill reduction applied")
-        print(despill)
 
-
-    # creating matte image to be displayed
-    matte = np.ones([fg.shape[0], fg.shape[1], 3], 'float')
-    matte[:, :, 0] = alpha
-    matte[:, :, 1] = alpha
-    matte[:, :, 2] = alpha
-
-    #TODO rework to allow negative positions
     # cutting foreground to view frustum
-    fg_canvas = np.zeros([canvas[0], canvas[1], 3], 'float')
-    height_cut = min(fg_pos[0] + fg.shape[0], canvas[0])
-    width_cut = min(fg_pos[1] + fg.shape[1], canvas[1])
-    fg_cut = fg_despilled[0: canvas[0]-fg_pos[0], 0: canvas[1]-fg_pos[1]]
-    fg_canvas[fg_pos[0]:height_cut, fg_pos[1]:width_cut] = fg_cut
+    fg_canvas = cut2canvas(fg_despilled, fg_pos, canvas)
 
     # cutting matte to view frustum
-    matte_canvas = np.zeros([canvas[0], canvas[1], 3], 'float')
-    matte_cut = matte[0: canvas[0]-fg_pos[0], 0: canvas[1]-fg_pos[1]]
-    matte_canvas[fg_pos[0]:height_cut, fg_pos[1]:width_cut] = matte_cut
+    matte_canvas = cut2canvas(matte, fg_pos, canvas)
 
     # cutting background to view frustum
-    bg_canvas = np.zeros([canvas[0], canvas[1], 3], 'float')
-    height_cut = min(bg_pos[0] + bg.shape[0], canvas[0])
-    width_cut = min(bg_pos[1] + bg.shape[1], canvas[1])
-    bg_cut = bg[0: canvas[0]-bg_pos[0], 0: canvas[1]-bg_pos[1]]
-    bg_canvas[bg_pos[0]:height_cut, bg_pos[1]:width_cut] = bg_cut
+    bg_canvas = cut2canvas(bg, bg_pos, canvas)
 
     # calculating comp image to be displayed
-    comp = fg_canvas*matte_canvas + bg_canvas*(1-matte_canvas)
+    comp = fg_canvas * matte_canvas + bg_canvas * (1 - matte_canvas)
 
     # edge blur
     if eb_size > 0:
@@ -90,7 +77,7 @@ def update_viewer(alpha):
         edge_img = cv2.blur(edge_img, (eb_size, eb_size))
 
         comp_blurred = cv2.blur(comp, (eb_size, eb_size))
-        comp = comp*(1-edge_img)+comp_blurred*edge_img
+        comp = comp * (1 - edge_img) + comp_blurred * edge_img
 
     # light wrap
     if lw_size > 0 and lw_intensity > 0:
@@ -98,26 +85,54 @@ def update_viewer(alpha):
         kernel = np.ones((lw_size, lw_size), 'float')
         edge = cv2.dilate(matte_binary, kernel) - cv2.erode(matte_binary, kernel)
         edge = cv2.blur(edge, (lw_size, lw_size))
-        edge *= (1-matte_binary)
+        edge *= (1 - matte_binary)
         light_wrap = np.zeros([canvas[0], canvas[1], 3], 'float')
         light_wrap[:, :, 0] = edge
         light_wrap[:, :, 1] = edge
         light_wrap[:, :, 2] = edge
         bg_blurred = cv2.blur(bg_canvas, (lw_size, lw_size))
         light_wrap *= bg_blurred
-        comp = np.maximum(comp, light_wrap*lw_intensity)
+        comp = np.maximum(comp, light_wrap * lw_intensity)
 
-    # show viewer
-    viewer = np.concatenate((fg_canvas, matte_canvas, comp), axis=1)
+    return comp, fg_canvas, matte_canvas
+
+
+def update_viewer(foreground, alpha, background):
+    """ draws the original image, the matte and the comp into a side by side viewer
+    """
+
+    viewer = np.ones([canvas[0], canvas[1], 3], 'float')
+
+    if foreground is not None:
+        # creating matte image to be displayed
+        matte = np.ones([fg.shape[0], fg.shape[1], 3], 'float')
+        matte[:, :, 0] = alpha
+        matte[:, :, 1] = alpha
+        matte[:, :, 2] = alpha
+
+        if background is not None:
+            comp, fg_canvas, matte_canvas = merge_images(foreground, matte, background)
+
+            # show viewer
+            viewer = np.concatenate((fg_canvas, matte_canvas, comp), axis=1)
+
+        else:
+            viewer = np.concatenate((fg, matte), axis=1)
+
+    elif background is not None:
+        viewer = background
+
     cv2.imshow("viewer", viewer)
 
-    return comp, matte_canvas
 
 
-def create_matte():
+def create_alpha():
     """ creates a matte from the foreground image
     :return: a matrix representing the alpha channel with values between 0.0 and 1.0
     """
+
+    if fg is None:
+        return None
 
     # Matte generation:
     # separating channels
@@ -140,79 +155,159 @@ def create_matte():
     return np.clip(a, 0.0, 1.0)
 
 
+# reading in images
+def read_foreground(filepath):
+    global fg
+    fg = cv2.imread(filepath).astype(np.float32)/255.0
+    return fg is not None
 
 
-
-# reading in foreground
-fg_path = input("Please enter the path of the foreground image: ")
-fg = cv2.imread(fg_path).astype(np.float32)/255.0
-while fg is None:
-    print("Could not load image from this path.")
-    fg_path = input("Please enter a valid path of the image: ")
-    fg = cv2.imread(fg_path)
-
-# reading in background
-bg_path = input("Please enter the path of the background image: ")
-bg = cv2.imread(bg_path).astype(np.float32)/255.0
-while bg is None:
-    print("Could not load image from this path.")
-    bg_path = input("Please enter a valid path of the image: ")
-    bg = cv2.imread(bg_path)
+def read_background(filepath):
+    global bg
+    bg = cv2.imread(filepath).astype(np.float32)/255.0
+    return bg is not None
 
 
-
-
-
-
-# input loop
-user_input = ""
-while user_input != "q":
-
-    # change computation parameters depending on user input
-    if user_input == "h":
-        print("type 'gain' to change alpha gain")
-        print("type 'lift' to change alpha lift")
-        print("type 'blur' to change alpha blur")
-        print("type 'tl fg' to translate the foreground image")
-        print("type 'tl bg' to translate the background image")
-        print("type 'edge blur' or 'eb' to change the size of the edge blur")
-        print("type 'light wrap' or 'lw' to change the size of the light wrap")
-        print("type 'spill reduction' or 'sr' to activate/deactivate spill reduction")
-    elif user_input == "gain":
-        a_gain = float(input("alpha gain: "))
-    elif user_input == "lift":
-        a_lift = float(input("alpha lift: "))
-    elif user_input == "blur":
-        a_blur = int(input("alpha blur: "))
-    elif user_input == "tl fg":
-        fg_pos[1] = max(0, int(input("translate foreground x: ")))
-        fg_pos[0] = max(0, int(input("translate foreground y: ")))
-    elif user_input == "tl bg":
-        bg_pos[1] = max(0, int(input("translate background x: ")))
-        bg_pos[0] = max(0, int(input("translate background y: ")))
-    elif user_input == "edge blur" or user_input == "eb":
-        eb_size = max(0, int(input("size of the edge blur: ")))
-    elif user_input == "light wrap" or user_input == "lw":
-        lw_size = max(0, int(input("size of the light wrap: ")))
-        lw_intensity = max(0.0, float(input("intensity of the light wrap: ")))
-    elif user_input == "spill reduction" or user_input == "sr":
-        inp = input("spill reduction True/False: ")
-        despill = inp == "True"
-
-    alpha = create_matte()
-
-    update_viewer(alpha)
-
-    cv2.waitKey(1)
-    user_input = input("Chance values (h: help, q: quit): ")
 
 
 #TODO writing out comp image
 #TODO writing out matte image
 #TODO writing out foreground with alpha
 
+
+
+
+def update_gain(value):
+    global a_gain
+    a_gain = value
+
+
+def update_lift(value):
+    global a_lift
+    a_lift = value
+
+
+def update_matte_blur(value):
+    global a_blur
+    a_blur = max(0, int(value))
+
+
+def update_edge_blur(value):
+    global eb_size
+    eb_size = max(0, int(value))
+
+
+def update_light_wrap_size(value):
+    global lw_size
+    lw_size = max(0, int(value))
+
+
+def update_light_wrap_intensity(value):
+    global lw_intensity
+    lw_intensity = max(0, value)
+
+
+def toggle_spill_reduction(on):
+    global despill
+    despill = on
+    refresh_view()
+
+
+def refresh_view():
+    alpha = create_alpha()
+    update_viewer(fg, alpha, bg)
+
+
+class FileLoader(QtWidgets.QHBoxLayout):
+    def __init__(self, label_text, read_function):
+        super(FileLoader, self).__init__()
+
+        self.read_function = read_function
+
+        self.label = QtWidgets.QLabel(label_text)
+        self.inputFileLineEdit = QtWidgets.QLineEdit("enter path")
+        self.fileDialogButton = QtWidgets.QPushButton("...")
+        self.fileDialogButton.clicked.connect(self.on_input_file_button)
+
+        self.addWidget(self.label)
+        self.addWidget(self.inputFileLineEdit)
+        self.addWidget(self.fileDialogButton)
+
+    def on_input_file_button(self):
+        filename, the_filter = QtWidgets.QFileDialog.getOpenFileName(self.fileDialogButton, ("Open Image"), ".", ("Image Files (*.png *.jpg *.bmp)"))
+        if filename:
+            self.inputFileLineEdit.setText(filename)
+            self.read_function(filename)
+            refresh_view()
+
+
+class ValueSlider(QtWidgets.QHBoxLayout):
+    def __init__(self, label_text, range_float, substeps, value_change_callback, release_callback):
+        super(ValueSlider, self).__init__()
+
+        self.value_change_callback = value_change_callback
+        self.release_callback = release_callback
+        self.substeps = substeps
+
+        label = QtWidgets.QLabel(label_text)
+        self.label_value = QtWidgets.QLabel("1")
+        slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        slider.setRange(range_float[0]*substeps, range_float[1]*substeps)
+        slider.valueChanged.connect(self.value_changed)
+        slider.sliderReleased.connect(release_callback)
+        self.addWidget(label)
+        self.addWidget(slider)
+        self.addWidget(self.label_value)
+
+    def value_changed(self, value):
+        self.value_change_callback(value/self.substeps)
+        self.label_value.setNum(value/self.substeps)
+
+
+class LabeledCheckBox(QtWidgets.QHBoxLayout):
+    def __init__(self, label_text, value_change_callback):
+        super(LabeledCheckBox, self).__init__()
+
+        label = QtWidgets.QLabel(label_text)
+        check_box = QtWidgets.QCheckBox()
+        check_box.setChecked(True)
+        check_box.clicked.connect(value_change_callback)
+        self.addWidget(label)
+        self.addWidget(check_box)
+
+
+class Controls(QtWidgets.QWidget):
+
+    def __init__(self):
+        super(Controls, self).__init__()
+
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QtWidgets.QVBoxLayout()
+
+        layout.addLayout(FileLoader("foreground", read_foreground))
+        layout.addLayout(FileLoader("background", read_background))
+        layout.addLayout(ValueSlider("alpha gain", (1, 4), 1000, update_gain, refresh_view))
+        layout.addLayout(ValueSlider("alpha lift", (-2, 0), 1000, update_lift, refresh_view))
+        layout.addLayout(ValueSlider("alpha blur", (0, 20), 1, update_matte_blur, refresh_view))
+        layout.addLayout(ValueSlider("edge blur", (0, 20), 1, update_edge_blur, refresh_view))
+        layout.addLayout(ValueSlider("light wrap size", (0, 20), 1, update_light_wrap_size, refresh_view))
+        layout.addLayout(ValueSlider("light wrap intensity", (0, 1), 1000, update_light_wrap_intensity, refresh_view))
+        layout.addLayout(LabeledCheckBox("spill reduction", toggle_spill_reduction))
+
+        self.setLayout(layout)
+
+        self.setGeometry(300, 300, 300, 150)
+        self.setWindowTitle('Controls')
+        self.show()
+
+
+app = QtWidgets.QApplication(sys.argv)
+controls = Controls()
+refresh_view()
+sys.exit(app.exec_())
+
+
 # cleanup
 cv2.destroyAllWindows()
-
-
-#C:\Users\Jan\Pictures\3DProfile.jpg
