@@ -8,7 +8,6 @@ canvas = (1080, 1920)
 fg = None
 bg = None
 
-
 # manipulation variables
 a_gain = 1
 a_lift = 0
@@ -25,12 +24,26 @@ cv2.namedWindow('viewer', cv2.WINDOW_NORMAL)
 
 
 def cut2canvas(img, img_pos, canvas_size):
-    # TODO rework to allow negative positions
+    # Creating an empty matrix to contain the cut off image.
     img_canvas = np.zeros([canvas_size[0], canvas_size[1], 3], 'float')
+
+    # If the image lies outside the canvas we can return prematurely.
+    if -img_pos[0] > img.shape[0] or -img_pos[1] > img.shape[1] \
+            or img_pos[0] > canvas_size[0] or img_pos[1] > canvas_size[1]:
+        return img_canvas
+
+    # Finding whether the image overlaps the right side of the canvas.
     height_cut = min(img_pos[0] + img.shape[0], canvas_size[0])
     width_cut = min(img_pos[1] + img.shape[1], canvas_size[1])
-    img_cut = img[0: canvas_size[0] - img_pos[0], 0: canvas_size[1] - img_pos[1]]
-    img_canvas[fg_pos[0]:height_cut, fg_pos[1]:width_cut] = img_cut
+
+    # Finding whether the image overlaps the left side of the canvas.
+    pos_cut = [max(-img_pos[0], 0), max(-img_pos[1], 0)]
+
+    # Cutting the image on the right and lower side.
+    img_cut = img[pos_cut[0]: canvas_size[0] - img_pos[0], pos_cut[1]: canvas_size[1] - img_pos[1]]
+
+    # Putting the cut image onto the canvas.
+    img_canvas[max(0, img_pos[0]):height_cut, max(0, img_pos[1]):width_cut] = img_cut
     return img_canvas
 
 
@@ -213,6 +226,26 @@ def toggle_spill_reduction(on):
     refresh_view()
 
 
+def update_fg_position_x(value):
+    global fg_pos
+    fg_pos[1] = int(value)
+
+
+def update_fg_position_y(value):
+    global fg_pos
+    fg_pos[0] = int(value)
+
+
+def update_bg_position_x(value):
+    global bg_pos
+    bg_pos[1] = int(value)
+
+
+def update_bg_position_y(value):
+    global bg_pos
+    bg_pos[0] = int(value)
+
+
 def refresh_view():
     alpha = create_alpha()
     update_viewer(fg, alpha, bg)
@@ -295,6 +328,10 @@ class Controls(QtWidgets.QWidget):
         layout.addLayout(ValueSlider("light wrap size", (0, 20), 1, update_light_wrap_size, refresh_view))
         layout.addLayout(ValueSlider("light wrap intensity", (0, 1), 1000, update_light_wrap_intensity, refresh_view))
         layout.addLayout(LabeledCheckBox("spill reduction", toggle_spill_reduction))
+        layout.addLayout(ValueSlider("fg pos x", (-1000, 1000), 1000, update_fg_position_x, refresh_view))
+        layout.addLayout(ValueSlider("fg pos y", (-1000, 1000), 1000, update_fg_position_y, refresh_view))
+        layout.addLayout(ValueSlider("bg pos x", (-1000, 1000), 1000, update_bg_position_x, refresh_view))
+        layout.addLayout(ValueSlider("bg pos y", (-1000, 1000), 1000, update_bg_position_y, refresh_view))
 
         self.setLayout(layout)
 
