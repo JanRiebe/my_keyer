@@ -5,8 +5,8 @@ from PySide2 import QtCore, QtWidgets
 
 # picture variables
 canvas = (1080, 1920)
-fg = None
-bg = None
+fg = None       # loaded foreground image
+bg = None       # loaded background image
 
 # manipulation variables
 a_gain = 1
@@ -24,6 +24,15 @@ cv2.namedWindow('viewer', cv2.WINDOW_NORMAL)
 
 
 def cut2canvas(img, img_pos, canvas_size):
+    """
+    Crops an image to match the canvas size.
+    If the image is smaller than the canvas size, the canvas is filled with with 0 values.
+    :param img: The image that should be cropped to the canvas.
+    :param img_pos: The position of the image relative to the canvas.
+    :param canvas_size: The size of the canvas and thus size of the returned image.
+    :return: The canvas containing the image. An numpy array of the size [canvas_size[0], canvas_size[1], 3].
+    """
+
     # Creating an empty matrix to contain the cut off image.
     img_canvas = np.zeros([canvas_size[0], canvas_size[1], 3], 'float')
 
@@ -73,7 +82,7 @@ def merge_images(foreground, matte, background):
     matte_canvas = cut2canvas(matte, fg_pos, canvas)
 
     # cutting background to view frustum
-    bg_canvas = cut2canvas(bg, bg_pos, canvas)
+    bg_canvas = cut2canvas(background, bg_pos, canvas)
 
     # calculating comp image to be displayed
     comp = fg_canvas * matte_canvas + bg_canvas * (1 - matte_canvas)
@@ -110,7 +119,7 @@ def merge_images(foreground, matte, background):
     return comp, fg_canvas, matte_canvas
 
 
-def update_viewer(foreground, alpha, background):
+def update_viewer(foreground, background):
     """ draws the original image, the matte and the comp into a side by side viewer
     """
 
@@ -118,10 +127,7 @@ def update_viewer(foreground, alpha, background):
 
     if foreground is not None:
         # creating matte image to be displayed
-        matte = np.ones([fg.shape[0], fg.shape[1], 3], 'float')
-        matte[:, :, 0] = alpha
-        matte[:, :, 1] = alpha
-        matte[:, :, 2] = alpha
+        matte = create_matte(foreground)
 
         if background is not None:
             comp, fg_canvas, matte_canvas = merge_images(foreground, matte, background)
@@ -138,37 +144,47 @@ def update_viewer(foreground, alpha, background):
     cv2.imshow("viewer", viewer)
 
 
-
-def create_alpha():
-    """ creates a matte from the foreground image
+def create_alpha(image):
+    """ creates an alpha channel from the foreground image
     :return: a matrix representing the alpha channel with values between 0.0 and 1.0
     """
 
-    if fg is None:
+    if image is None:
         return None
 
     # Matte generation:
     # separating channels
-    b = fg[:, :, 0]
-    g = fg[:, :, 1]
-    r = fg[:, :, 2]
+    b = image[:, :, 0]
+    g = image[:, :, 1]
+    r = image[:, :, 2]
 
-    #TODO try to use adaptive threshold and blur to even out the green channel before keying
-
-
-    # calculating matte
+    # calculating alpha
     a = 1 - ((g - b) + (g - r))
     a = a * a_gain
     a = a + a_lift
 
-    # blurring matte
+    # blurring alpha
     if a_blur > 0:
         a = cv2.blur(a, (a_blur, a_blur))
 
     return np.clip(a, 0.0, 1.0)
 
 
-# reading in images
+def create_matte(image):
+    """
+    Creates an rgb image with matte values in all channels.
+    :return: An image matching the image.
+    """
+    alpha = create_alpha(image)
+
+    matte = np.ones([image.shape[0], image.shape[1], 3], 'float')
+    matte[:, :, 0] = alpha
+    matte[:, :, 1] = alpha
+    matte[:, :, 2] = alpha
+
+    return matte
+
+
 def read_foreground(filepath):
     global fg
     fg = cv2.imread(filepath).astype(np.float32)/255.0
@@ -181,13 +197,31 @@ def read_background(filepath):
     return bg is not None
 
 
+def write_matte(filepath):
+    if fg is None:
+        return
+
+    matte = create_matte(fg)
+    matte *= 255.0
+
+    try:
+        status = cv2.imwrite(filepath, matte)
+    except:
+        print("Could not save image", filepath)
 
 
-#TODO writing out comp image
-#TODO writing out matte image
-#TODO writing out foreground with alpha
+def write_comp(filepath):
+    if fg is None or bg is None:
+        return
 
+    matte = create_matte(fg)
+    comp, fg_canvas, matte_canvas = merge_images(fg, matte, bg)
+    comp *= 255.0
 
+    try:
+        status = cv2.imwrite(filepath, comp)
+    except:
+        print("Could not save image", filepath)
 
 
 def update_gain(value):
@@ -247,8 +281,7 @@ def update_bg_position_y(value):
 
 
 def refresh_view():
-    alpha = create_alpha()
-    update_viewer(fg, alpha, bg)
+    update_viewer(fg, bg)
 
 
 class FileLoader(QtWidgets.QHBoxLayout):
@@ -258,20 +291,37 @@ class FileLoader(QtWidgets.QHBoxLayout):
         self.read_function = read_function
 
         self.label = QtWidgets.QLabel(label_text)
-        self.inputFileLineEdit = QtWidgets.QLineEdit("enter path")
-        self.fileDialogButton = QtWidgets.QPushButton("...")
+        self.inputFileLabel = QtWidgets.QLabel("select image")
+        self.fileDialogButton = QtWidgets.QPushButton("open")
         self.fileDialogButton.clicked.connect(self.on_input_file_button)
 
         self.addWidget(self.label)
-        self.addWidget(self.inputFileLineEdit)
+        self.addWidget(self.inputFileLabel)
         self.addWidget(self.fileDialogButton)
 
     def on_input_file_button(self):
-        filename, the_filter = QtWidgets.QFileDialog.getOpenFileName(self.fileDialogButton, ("Open Image"), ".", ("Image Files (*.png *.jpg *.bmp)"))
+        filename, the_filter = QtWidgets.QFileDialog.getOpenFileName(self.fileDialogButton, "Open Image", ".", "Image Files (*.png *.jpg *.bmp)")
         if filename:
-            self.inputFileLineEdit.setText(filename)
+            self.inputFileLabel.setText(filename)
             self.read_function(filename)
             refresh_view()
+
+
+class FileSaver(QtWidgets.QHBoxLayout):
+    def __init__(self, label_text, read_function):
+        super(FileSaver, self).__init__()
+
+        self.read_function = read_function
+
+        self.fileDialogButton = QtWidgets.QPushButton("Save "+label_text)
+        self.fileDialogButton.clicked.connect(self.on_input_file_button)
+
+        self.addWidget(self.fileDialogButton)
+
+    def on_input_file_button(self):
+        filename, the_filter = QtWidgets.QFileDialog.getSaveFileName(self.fileDialogButton, "Save as", "./", "Image Files (*.png *.jpg *.bmp)")
+        if filename:
+            self.read_function(filename)
 
 
 class ValueSlider(QtWidgets.QHBoxLayout):
@@ -321,6 +371,10 @@ class Controls(QtWidgets.QWidget):
 
         layout.addLayout(FileLoader("foreground", read_foreground))
         layout.addLayout(FileLoader("background", read_background))
+        saving_layout = QtWidgets.QHBoxLayout()
+        saving_layout.addLayout(FileSaver("matte", write_matte))
+        saving_layout.addLayout(FileSaver("comp", write_comp))
+        layout.addLayout(saving_layout)
         layout.addLayout(ValueSlider("alpha gain", (1, 4), 1000, update_gain, refresh_view))
         layout.addLayout(ValueSlider("alpha lift", (-2, 0), 1000, update_lift, refresh_view))
         layout.addLayout(ValueSlider("alpha blur", (0, 20), 1, update_matte_blur, refresh_view))
